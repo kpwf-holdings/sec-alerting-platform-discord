@@ -1,98 +1,35 @@
-# Security Alerting Platform ⚡
+# VT Discord Downloads Monitor
 
-> 🚧 Project Status: IN PROGRESS
+Public, sanitized Windows monitor that watches the Downloads folder for newly completed high-risk file downloads, checks them against VirusTotal, and sends Discord alerts.
 
-This project is a secure, scalable alerting and incident tracking system designed to integrate:
+## Features
+- Watches `%USERPROFILE%\Downloads`
+- Checks known file hashes with VirusTotal
+- Uploads unknown files to VirusTotal using multipart form-data
+- Sends Discord alerts with file name, status, detections, SHA256, and VT link
+- Prevents duplicate alerts with path locking and hash deduplication
+- Supports background execution with Task Scheduler
 
-- Cloudflare (WAF, Logs, Workers)
-- Firewalla (network intelligence)
-- Kanboard (sanitized public task tracking)
-- Slack / Discord (notifications)
+## Repo layout
+```text
+scripts/vt-discord-monitor-bg-lockfix.ps1
+docs/windows-task-scheduler-setup-public.md
+```
 
----
+## Configuration
+Replace placeholders locally before running:
 
-## 🧠 Purpose
+```powershell
+$DiscordWebhook = "YOUR_DISCORD_WEBHOOK_URL"
+$VTApiKey       = "YOUR_VT_API_KEY"
+```
 
-Build a **secure-by-design alerting pipeline** that:
+## Runtime files
+The script writes local runtime artifacts outside the repository:
 
-- Processes security events in real-time
-- Sanitizes sensitive data before exposure
-- Tracks incidents in a structured workflow
-- Prevents leakage of infrastructure details
+- `C:\ProgramData\VTDiscordMonitor\scanned_hashes.json`
+- `C:\ProgramData\VTDiscordMonitor\processing_paths.json`
+- `C:\ProgramData\VTDiscordMonitor\vt-discord-monitor.log`
 
----
-
-## 🔐 Core Principle
-
-> **No sensitive data leaves the control layer**
-
-All alerts are:
-- Filtered
-- Sanitized
-- Tokenized (Incident IDs)
-
----
-
-## 🧱 System Overview
-
-See: `ARCHITECTURE.md`
-
----
-
-## 📊 Diagrams
-
-See: `DIAGRAM.md`
-
----
-
-## ⚙️ Implementation
-
-See: `IMPLEMENTATION.md`
-
----
-
-## 🚀 Status
-
-- [x] Architecture design
-- [ ] Worker v1 (intake + sanitize)
-- [ ] KV deduplication layer
-- [ ] Kanboard integration
-- [ ] Notification routing
-
----
-
-## ⚠️ Security Notice
-
-This repository intentionally excludes:
-- Raw logs
-- IP addresses
-- Domains
-- Internal infrastructure details
-
----
-
-## 📌 Roadmap
-
-Phase 1:
-- Intake + sanitize pipeline
-
-Phase 2:
-- Deduplication + incident tracking
-
-Phase 3:
-- Advanced routing + reporting
-
----
-
-## 🧩 Stack
-
-- Cloudflare Workers
-- Cloudflare KV (light state)
-- Kanboard API
-- Slack / Discord Webhooks
-
----
-
-## 📄 License
-
-TBD
+## Security note
+Do not commit real Discord webhook URLs, VirusTotal API keys, logs, or runtime state files.
