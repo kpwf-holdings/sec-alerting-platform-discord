@@ -1,89 +1,153 @@
 export default {
   async fetch(request, env, ctx) {
-    if (request.method !== "POST") {
-      return new Response("Method Not Allowed", { status: 405 });
+    const url = new URL(request.url);
+
+    // ------------------------
+    // ROUTING
+    // ------------------------
+    if (request.method === "POST") {
+      if (url.pathname === "/github") {
+        return handleGitHubEvent(request, env);
+      }
+
+      if (url.pathname === "/kanboard") {
+        return handleKanboardWebhook(request, env);
+      }
+
+      // default = alert intake
+      return handleAlert(request, env);
     }
 
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return new Response("Invalid JSON", { status: 400 });
-    }
+    return new Response("Not Found", { status: 404 });
+  }
+};
 
-    // ------------------------
-    // Normalize
-    // ------------------------
-    const normalized = {
-      source: detectSource(body),
-      type: detectType(body),
-      severity: detectSeverity(body),
-      timestamp: new Date().toISOString(),
-      raw: body
-    };
+// ========================
+// ALERT INTAKE PIPELINE
+// ========================
+async function handleAlert(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
 
-    // ------------------------
-    // Hash (dedup key)
-    // ------------------------
-    const hash = await generateHash(normalized);
+  const normalized = {
+    source: detectSource(body),
+    type: detectType(body),
+    severity: detectSeverity(body),
+    timestamp: new Date().toISOString(),
+    raw: body
+  };
 
-    const existingRaw = await env.ALERT_KV.get(hash);
-    let existing = existingRaw ? JSON.parse(existingRaw) : null;
+  const hash = await generateHash(normalized);
 
-    // ------------------------
-    // EXISTING INCIDENT → UPDATE
-    // ------------------------
-    if (existing) {
-      console.log("UPDATING EXISTING INCIDENT:", existing);
+  const existingRaw = await env.ALERT_KV.get(hash);
+  let existing = existingRaw ? JSON.parse(existingRaw) : null;
 
-      await updateKanboardTask(env, existing.task_id);
-
-      return new Response(JSON.stringify({
-        status: "updated",
-        incident_id: existing.incident_id
-      }), {
-        headers: { "Content-Type": "application/json" }
-      });
-    }
-
-    // ------------------------
-    // NEW INCIDENT FLOW
-    // ------------------------
-
-    const sanitized = {
-      title: buildTitle(normalized),
-      severity: normalized.severity,
-      source: normalized.source,
-      summary: buildSummary(normalized)
-    };
-
-    const incidentId = generateIncidentId(hash);
-
-    const taskId = await createKanboardTask(env, sanitized, incidentId);
-
-    // Store mapping in KV (24h TTL)
-    await env.ALERT_KV.put(hash, JSON.stringify({
-      incident_id: incidentId,
-      task_id: taskId
-    }), { expirationTtl: 86400 });
-
-    console.log("NEW INCIDENT CREATED:", {
-      incidentId,
-      taskId
-    });
+  // ------------------------
+  // EXISTING → UPDATE
+  // ------------------------
+  if (existing) {
+    await updateKanboardTask(env, existing.task_id);
 
     return new Response(JSON.stringify({
-      status: "new",
-      incident_id: incidentId
+      status: "updated",
+      incident_id: existing.incident_id
     }), {
       headers: { "Content-Type": "application/json" }
     });
   }
-};
 
-// ------------------------
-// Hashing
-// ------------------------
+  // ------------------------
+  // NEW INCIDENT
+  // ------------------------
+  const sanitized = {
+    title: buildTitle(normalized),
+    severity: normalized.severity,
+    source: normalized.source,
+    summary: buildSummary(normalized)
+  };
+
+  const incidentId = generateIncidentId(hash);
+
+  const taskId = await createKanboardTask(env, sanitized, incidentId);
+
+  await env.ALERT_KV.put(hash, JSON.stringify({
+    incident_id: incidentId,
+    task_id: taskId
+  }), { expirationTtl: 86400 });
+
+  return new Response(JSON.stringify({
+    status: "new",
+    incident_id: incidentId
+  }), {
+    headers: { "Content-Type": "application/json" }
+  });
+}
+
+// ========================
+// GITHUB HANDLER
+// ========================
+async function handleGitHubEvent(request, env) {
+  const body = await request.json();
+
+  const isPRMerged =
+    body.pull_request && body.pull_request.merged === true;
+
+  const isIssueClosed =
+    body.issue && body.action === "closed";
+
+  if (!isPRMerged && !isIssueClosed) {
+    return new Response("Ignored", { status: 200 });
+  }
+
+  const title =
+    body.pull_request?.title || body.issue?.title || "";
+
+  const match = title.match(/INC-[A-Z0-9]+/);
+
+  if (!match) {
+    return new Response("No Incident ID", { status: 200 });
+  }
+
+  const incidentId = match[0];
+
+  const taskId = await findTaskByIncident(env, incidentId);
+
+  if (!taskId) {
+    return new Response("Task not found", { status: 404 });
+  }
+
+  await moveTaskToResolved(env, taskId);
+
+  return new Response("Kanboard updated", { status: 200 });
+}
+
+// ========================
+// KANBOARD → DISCORD
+// ========================
+async function handleKanboardWebhook(request, env) {
+  const body = await request.json();
+  const task = body.task;
+
+  if (!task) {
+    return new Response("No task", { status: 400 });
+  }
+
+  if (task.column_id != env.KANBOARD_COLUMN_CRITICAL) {
+    return new Response("Ignored", { status: 200 });
+  }
+
+  await sendDiscordAlert(env, task);
+
+  return new Response("Alert sent", { status: 200 });
+}
+
+// ========================
+// HELPERS
+// ========================
 async function generateHash(event) {
   const input = JSON.stringify({
     source: event.source,
@@ -99,16 +163,13 @@ async function generateHash(event) {
     .join("");
 }
 
-// ------------------------
-// Incident ID
-// ------------------------
 function generateIncidentId(hash) {
   return "INC-" + hash.substring(0, 6).toUpperCase();
 }
 
-// ------------------------
-// Kanboard - Create Task
-// ------------------------
+// ========================
+// KANBOARD CREATE
+// ========================
 async function createKanboardTask(env, event, incidentId) {
   const columnId =
     event.severity === "high"
@@ -142,15 +203,12 @@ Summary: ${event.summary}
   });
 
   const data = await res.json();
-
-  console.log("KANBOARD CREATE RESPONSE:", data);
-
-  return data.result; // task_id
+  return data.result;
 }
 
-// ------------------------
-// Kanboard - Update Task
-// ------------------------
+// ========================
+// KANBOARD UPDATE
+// ========================
 async function updateKanboardTask(env, taskId) {
   const payload = {
     jsonrpc: "2.0",
@@ -161,7 +219,7 @@ async function updateKanboardTask(env, taskId) {
     }
   };
 
-  const res = await fetch(env.KANBOARD_URL, {
+  await fetch(env.KANBOARD_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -169,15 +227,75 @@ async function updateKanboardTask(env, taskId) {
     },
     body: JSON.stringify(payload)
   });
-
-  const data = await res.json();
-
-  console.log("KANBOARD UPDATE RESPONSE:", data);
 }
 
-// ------------------------
-// Helpers
-// ------------------------
+// ========================
+// MOVE TO RESOLVED
+// ========================
+async function moveTaskToResolved(env, taskId) {
+  const payload = {
+    jsonrpc: "2.0",
+    method: "moveTaskPosition",
+    id: 1,
+    params: {
+      project_id: Number(env.KANBOARD_PROJECT_ID),
+      task_id: Number(taskId),
+      column_id: Number(env.KANBOARD_COLUMN_RESOLVED),
+      position: 1
+    }
+  };
+
+  await fetch(env.KANBOARD_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Basic " + btoa("jsonrpc:" + env.KANBOARD_TOKEN)
+    },
+    body: JSON.stringify(payload)
+  });
+}
+
+// ========================
+// KV LOOKUP
+// ========================
+async function findTaskByIncident(env, incidentId) {
+  const list = await env.ALERT_KV.list();
+
+  for (const key of list.keys) {
+    const val = await env.ALERT_KV.get(key.name);
+    if (!val) continue;
+
+    const data = JSON.parse(val);
+
+    if (data.incident_id === incidentId) {
+      return data.task_id;
+    }
+  }
+
+  return null;
+}
+
+// ========================
+// DISCORD
+// ========================
+async function sendDiscordAlert(env, task) {
+  const message = {
+    content: `🚨 **Critical Incident**
+${task.title}
+
+${task.description}`
+  };
+
+  await fetch(env.DISCORD_WEBHOOK_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(message)
+  });
+}
+
+// ========================
+// DETECTION HELPERS
+// ========================
 function detectSource(body) {
   if (body?.source) return body.source;
   if (body?.ray_id) return "cloudflare";
