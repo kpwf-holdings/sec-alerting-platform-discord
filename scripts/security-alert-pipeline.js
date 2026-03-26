@@ -116,7 +116,7 @@ async function handleGitHubEvent(request, env) {
 }
 
 // ========================
-// KANBOARD → DISCORD (SECURED)
+// KANBOARD → DISCORD (FIXED)
 // ========================
 async function handleKanboardWebhook(request, env) {
   const url = new URL(request.url);
@@ -127,12 +127,17 @@ async function handleKanboardWebhook(request, env) {
   }
 
   const body = await request.json();
-  const task = body.task;
+
+  // 🔥 FIXED LINE
+  const task = body.event_data?.task;
+
+  console.log("KANBOARD EVENT:", body);
 
   if (!task) {
     return new Response("No task", { status: 400 });
   }
 
+  // only trigger on Critical column
   if (String(task.column_id) !== String(env.KANBOARD_COLUMN_CRITICAL)) {
     return new Response("Ignored", { status: 200 });
   }
