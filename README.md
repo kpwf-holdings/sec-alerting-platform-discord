@@ -1,35 +1,128 @@
-# VT Discord Downloads Monitor
+# Security Alerting Platform ⚡
 
-Public, sanitized Windows monitor that watches the Downloads folder for newly completed high-risk file downloads, checks them against VirusTotal, and sends Discord alerts.
+> 🚧 Project Status: IN PROGRESS
 
-## Features
-- Watches `%USERPROFILE%\Downloads`
-- Checks known file hashes with VirusTotal
-- Uploads unknown files to VirusTotal using multipart form-data
-- Sends Discord alerts with file name, status, detections, SHA256, and VT link
-- Prevents duplicate alerts with path locking and hash deduplication
-- Supports background execution with Task Scheduler
+This project is evolving from a VirusTotal alert bot into a full
+**security alerting platform** designed for real-time detection, secure
+processing, and structured incident tracking.
 
-## Repo layout
-```text
-scripts/vt-discord-monitor-bg-lockfix.ps1
-docs/windows-task-scheduler-setup-public.md
-```
+------------------------------------------------------------------------
 
-## Configuration
-Replace placeholders locally before running:
+## 🧠 Purpose
 
-```powershell
-$DiscordWebhook = "YOUR_DISCORD_WEBHOOK_URL"
-$VTApiKey       = "YOUR_VT_API_KEY"
-```
+Build a **secure-by-design alerting pipeline** that:
 
-## Runtime files
-The script writes local runtime artifacts outside the repository:
+-   Processes security events in real-time
+-   Sanitizes sensitive data before exposure
+-   Tracks incidents through a structured workflow
+-   Prevents leakage of infrastructure details
 
-- `C:\ProgramData\VTDiscordMonitor\scanned_hashes.json`
-- `C:\ProgramData\VTDiscordMonitor\processing_paths.json`
-- `C:\ProgramData\VTDiscordMonitor\vt-discord-monitor.log`
+------------------------------------------------------------------------
 
-## Security note
-Do not commit real Discord webhook URLs, VirusTotal API keys, logs, or runtime state files.
+## 🧱 Current Architecture
+
+    Alerts → Cloudflare Worker → KV (state)
+                             ↓
+                         Kanboard
+                             ↓
+                         Discord
+
+------------------------------------------------------------------------
+
+## ⚙️ Core Components
+
+### ⚡ Cloudflare Worker
+
+-   Intake endpoint for alerts
+-   Normalization and sanitization
+-   Deduplication using KV
+-   Routing logic for integrations
+
+### 🧊 KV (Key-Value Store)
+
+-   Incident tracking
+-   Deduplication layer
+-   TTL-based cleanup
+
+### 📊 Kanboard
+
+-   Public-facing incident tracking
+-   Task lifecycle:
+    -   Intake → Investigating → Critical → Resolved
+
+### 🚨 Discord
+
+-   Real-time alerts for critical incidents
+-   Triggered via secured webhook
+
+------------------------------------------------------------------------
+
+## 🔐 Security Model
+
+-   No raw IPs, domains, or sensitive data exposed
+-   All external systems receive **sanitized payloads only**
+-   Webhooks secured via token validation
+-   KV stores hashed identifiers only
+
+------------------------------------------------------------------------
+
+## 🔁 Current Features
+
+-   ✅ Alert ingestion (Cloudflare Worker)
+-   ✅ Data sanitization layer
+-   ✅ KV-based deduplication
+-   ✅ Incident ID generation
+-   ✅ Kanboard task creation + updates
+-   ✅ Discord alerts for critical incidents
+
+------------------------------------------------------------------------
+
+## 🧩 In Progress
+
+-   ⏳ GitHub integration (auto-resolve incidents)
+-   ⏳ Enhanced severity routing
+-   ⏳ Reporting / summaries
+
+------------------------------------------------------------------------
+
+## 🧪 Legacy / Previous Work
+
+The original **VirusTotal alert bot** is being refactored and will be
+reintegrated into this platform as a separate input source.
+
+------------------------------------------------------------------------
+
+## 🚀 Roadmap
+
+### Phase 1
+
+-   Core pipeline (✅ complete)
+
+### Phase 2
+
+-   GitHub lifecycle automation
+
+### Phase 3
+
+-   Advanced alert routing + analytics
+
+------------------------------------------------------------------------
+
+## 📁 Repository Structure
+
+    scripts/
+      security-alert-pipeline.js
+      vt-monitor.js (planned reintegration)
+
+------------------------------------------------------------------------
+
+## ⚠️ Notes
+
+This repository intentionally excludes: - Sensitive infrastructure
+details - Raw logs or telemetry - API secrets or tokens
+
+------------------------------------------------------------------------
+
+## 📄 License
+
+TBD
