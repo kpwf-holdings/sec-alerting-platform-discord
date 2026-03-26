@@ -2,9 +2,6 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // ------------------------
-    // ROUTING
-    // ------------------------
     if (request.method === "POST") {
       if (url.pathname === "/github") {
         return handleGitHubEvent(request, env);
@@ -14,7 +11,6 @@ export default {
         return handleKanboardWebhook(request, env);
       }
 
-      // default = alert intake
       return handleAlert(request, env);
     }
 
@@ -23,7 +19,7 @@ export default {
 };
 
 // ========================
-// ALERT INTAKE PIPELINE
+// ALERT INTAKE
 // ========================
 async function handleAlert(request, env) {
   let body;
@@ -46,9 +42,6 @@ async function handleAlert(request, env) {
   const existingRaw = await env.ALERT_KV.get(hash);
   let existing = existingRaw ? JSON.parse(existingRaw) : null;
 
-  // ------------------------
-  // EXISTING → UPDATE
-  // ------------------------
   if (existing) {
     await updateKanboardTask(env, existing.task_id);
 
@@ -60,9 +53,6 @@ async function handleAlert(request, env) {
     });
   }
 
-  // ------------------------
-  // NEW INCIDENT
-  // ------------------------
   const sanitized = {
     title: buildTitle(normalized),
     severity: normalized.severity,
@@ -88,7 +78,7 @@ async function handleAlert(request, env) {
 }
 
 // ========================
-// GITHUB HANDLER
+// GITHUB → RESOLVE
 // ========================
 async function handleGitHubEvent(request, env) {
   const body = await request.json();
@@ -126,9 +116,16 @@ async function handleGitHubEvent(request, env) {
 }
 
 // ========================
-// KANBOARD → DISCORD
+// KANBOARD → DISCORD (SECURED)
 // ========================
 async function handleKanboardWebhook(request, env) {
+  const url = new URL(request.url);
+  const key = url.searchParams.get("key");
+
+  if (key !== env.KANBOARD_WEBHOOK_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
   const body = await request.json();
   const task = body.task;
 
@@ -136,7 +133,7 @@ async function handleKanboardWebhook(request, env) {
     return new Response("No task", { status: 400 });
   }
 
-  if (task.column_id != env.KANBOARD_COLUMN_CRITICAL) {
+  if (String(task.column_id) !== String(env.KANBOARD_COLUMN_CRITICAL)) {
     return new Response("Ignored", { status: 200 });
   }
 
@@ -146,7 +143,7 @@ async function handleKanboardWebhook(request, env) {
 }
 
 // ========================
-// HELPERS
+// HASHING
 // ========================
 async function generateHash(event) {
   const input = JSON.stringify({
@@ -163,12 +160,15 @@ async function generateHash(event) {
     .join("");
 }
 
+// ========================
+// INCIDENT ID
+// ========================
 function generateIncidentId(hash) {
   return "INC-" + hash.substring(0, 6).toUpperCase();
 }
 
 // ========================
-// KANBOARD CREATE
+// CREATE TASK
 // ========================
 async function createKanboardTask(env, event, incidentId) {
   const columnId =
@@ -207,7 +207,7 @@ Summary: ${event.summary}
 }
 
 // ========================
-// KANBOARD UPDATE
+// UPDATE TASK
 // ========================
 async function updateKanboardTask(env, taskId) {
   const payload = {
@@ -294,7 +294,7 @@ ${task.description}`
 }
 
 // ========================
-// DETECTION HELPERS
+// DETECTION
 // ========================
 function detectSource(body) {
   if (body?.source) return body.source;
