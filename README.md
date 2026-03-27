@@ -43,3 +43,18 @@ Production-ready
 ## 📄 License
 
 TBD
+
+---
+
+## 4️⃣ Add Future Section (prep for IP intelligence)
+
+Append to README:
+
+```markdown id="future_section"
+## Future Enhancements
+
+- IP intelligence enrichment (IPInfo / threat scoring)
+- Severity auto-classification
+- Automated remediation workflows
+- GitHub PR automation
+- Advanced alert routing
