@@ -64,6 +64,13 @@ async function handleAlert(request, env) {
 
   const taskId = await createKanboardTask(env, sanitized, incidentId);
 
+  // 🔥 SAFE GitHub call (no crash)
+  try {
+    await createGitHubIssue(env, sanitized, incidentId);
+  } catch (err) {
+    console.log("GITHUB ERROR:", err);
+  }
+
   await env.ALERT_KV.put(hash, JSON.stringify({
     incident_id: incidentId,
     task_id: taskId
@@ -116,7 +123,7 @@ async function handleGitHubEvent(request, env) {
 }
 
 // ========================
-// KANBOARD → DISCORD (FIXED)
+// KANBOARD → DISCORD
 // ========================
 async function handleKanboardWebhook(request, env) {
   const url = new URL(request.url);
@@ -127,17 +134,12 @@ async function handleKanboardWebhook(request, env) {
   }
 
   const body = await request.json();
-
-  // 🔥 FIXED LINE
   const task = body.event_data?.task;
-
-  console.log("KANBOARD EVENT:", body);
 
   if (!task) {
     return new Response("No task", { status: 400 });
   }
 
-  // only trigger on Critical column
   if (String(task.column_id) !== String(env.KANBOARD_COLUMN_CRITICAL)) {
     return new Response("Ignored", { status: 200 });
   }
@@ -148,32 +150,42 @@ async function handleKanboardWebhook(request, env) {
 }
 
 // ========================
-// HASHING
+// GITHUB ISSUE CREATION (SAFE)
 // ========================
-async function generateHash(event) {
-  const input = JSON.stringify({
-    source: event.source,
-    type: event.type,
-    severity: event.severity
+async function createGitHubIssue(env, event, incidentId) {
+  const url = `https://api.github.com/repos/${env.GITHUB_REPO}/issues`;
+
+  const payload = {
+    title: `[${incidentId}] ${event.title}`,
+    body: `Incident ID: ${incidentId}
+Severity: ${event.severity}
+Source: ${event.source}
+
+Summary:
+${event.summary}`
+  };
+
+  const res = await fetch(url, {
+    method: "POST",
+   headers: {
+  "Content-Type": "application/json",
+  "Authorization": `Bearer ${env.GITHUB_TOKEN}`,
+  "Accept": "application/vnd.github+json",
+  "User-Agent": "security-alert-worker"
+},
+    body: JSON.stringify(payload)
   });
 
-  const data = new TextEncoder().encode(input);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const text = await res.text();
+  console.log("GITHUB RESPONSE:", text);
 
-  return [...new Uint8Array(hashBuffer)]
-    .map(b => b.toString(16).padStart(2, "0"))
-    .join("");
+  if (!res.ok) {
+    throw new Error(`GitHub API failed: ${res.status}`);
+  }
 }
 
 // ========================
-// INCIDENT ID
-// ========================
-function generateIncidentId(hash) {
-  return "INC-" + hash.substring(0, 6).toUpperCase();
-}
-
-// ========================
-// CREATE TASK
+// KANBOARD FUNCTIONS
 // ========================
 async function createKanboardTask(env, event, incidentId) {
   const columnId =
@@ -211,9 +223,6 @@ Summary: ${event.summary}
   return data.result;
 }
 
-// ========================
-// UPDATE TASK
-// ========================
 async function updateKanboardTask(env, taskId) {
   const payload = {
     jsonrpc: "2.0",
@@ -234,9 +243,6 @@ async function updateKanboardTask(env, taskId) {
   });
 }
 
-// ========================
-// MOVE TO RESOLVED
-// ========================
 async function moveTaskToResolved(env, taskId) {
   const payload = {
     jsonrpc: "2.0",
@@ -299,8 +305,27 @@ ${task.description}`
 }
 
 // ========================
-// DETECTION
+// HELPERS
 // ========================
+async function generateHash(event) {
+  const input = JSON.stringify({
+    source: event.source,
+    type: event.type,
+    severity: event.severity
+  });
+
+  const data = new TextEncoder().encode(input);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+
+  return [...new Uint8Array(hashBuffer)]
+    .map(b => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function generateIncidentId(hash) {
+  return "INC-" + hash.substring(0, 6).toUpperCase();
+}
+
 function detectSource(body) {
   if (body?.source) return body.source;
   if (body?.ray_id) return "cloudflare";
