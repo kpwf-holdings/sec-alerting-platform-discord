@@ -64,9 +64,9 @@ async function handleAlert(request, env) {
 
   const taskId = await createKanboardTask(env, sanitized, incidentId);
 
-  // 🔥 SAFE GitHub call (no crash)
+  // Create GitHub Issue with embedded task ID
   try {
-    await createGitHubIssue(env, sanitized, incidentId);
+    await createGitHubIssue(env, sanitized, incidentId, taskId);
   } catch (err) {
     console.log("GITHUB ERROR:", err);
   }
@@ -85,41 +85,33 @@ async function handleAlert(request, env) {
 }
 
 // ========================
-// GITHUB → RESOLVE
+// GITHUB → KANBOARD CLOSE
 // ========================
 async function handleGitHubEvent(request, env) {
   const body = await request.json();
 
-  const isPRMerged =
-    body.pull_request && body.pull_request.merged === true;
+  console.log("GITHUB WEBHOOK:", body);
 
-  const isIssueClosed =
-    body.issue && body.action === "closed";
+  if (body.issue && body.action === "closed") {
+    const issueBody = body.issue.body || "";
 
-  if (!isPRMerged && !isIssueClosed) {
-    return new Response("Ignored", { status: 200 });
+    const taskMatch = issueBody.match(/Kanboard Task ID:\s*(\d+)/);
+
+    if (!taskMatch) {
+      console.log("No task ID found in issue body");
+      return new Response("No task ID", { status: 200 });
+    }
+
+    const taskId = Number(taskMatch[1]);
+
+    await closeKanboardTask(env, taskId);
+
+    console.log("Closed task (final):", taskId);
+
+    return new Response("Kanboard updated", { status: 200 });
   }
 
-  const title =
-    body.pull_request?.title || body.issue?.title || "";
-
-  const match = title.match(/INC-[A-Z0-9]+/);
-
-  if (!match) {
-    return new Response("No Incident ID", { status: 200 });
-  }
-
-  const incidentId = match[0];
-
-  const taskId = await findTaskByIncident(env, incidentId);
-
-  if (!taskId) {
-    return new Response("Task not found", { status: 404 });
-  }
-
-  await moveTaskToResolved(env, taskId);
-
-  return new Response("Kanboard updated", { status: 200 });
+  return new Response("Ignored", { status: 200 });
 }
 
 // ========================
@@ -150,14 +142,16 @@ async function handleKanboardWebhook(request, env) {
 }
 
 // ========================
-// GITHUB ISSUE CREATION (SAFE)
+// GITHUB ISSUE CREATION
 // ========================
-async function createGitHubIssue(env, event, incidentId) {
+async function createGitHubIssue(env, event, incidentId, taskId) {
   const url = `https://api.github.com/repos/${env.GITHUB_REPO}/issues`;
 
   const payload = {
     title: `[${incidentId}] ${event.title}`,
     body: `Incident ID: ${incidentId}
+Kanboard Task ID: ${taskId}
+
 Severity: ${event.severity}
 Source: ${event.source}
 
@@ -167,12 +161,12 @@ ${event.summary}`
 
   const res = await fetch(url, {
     method: "POST",
-   headers: {
-  "Content-Type": "application/json",
-  "Authorization": `Bearer ${env.GITHUB_TOKEN}`,
-  "Accept": "application/vnd.github+json",
-  "User-Agent": "security-alert-worker"
-},
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${env.GITHUB_TOKEN}`,
+      "Accept": "application/vnd.github+json",
+      "User-Agent": "security-alert-worker"
+    },
     body: JSON.stringify(payload)
   });
 
@@ -243,8 +237,10 @@ async function updateKanboardTask(env, taskId) {
   });
 }
 
-async function moveTaskToResolved(env, taskId) {
-  const payload = {
+// 🔥 FINAL FIX: proper completion
+async function closeKanboardTask(env, taskId) {
+  // 1️⃣ MOVE to Resolved column
+  const movePayload = {
     jsonrpc: "2.0",
     method: "moveTaskPosition",
     id: 1,
@@ -252,6 +248,7 @@ async function moveTaskToResolved(env, taskId) {
       project_id: Number(env.KANBOARD_PROJECT_ID),
       task_id: Number(taskId),
       column_id: Number(env.KANBOARD_COLUMN_RESOLVED),
+      swimlane_id: 29, // 🔥 use actual swimlane from your task
       position: 1
     }
   };
@@ -262,28 +259,30 @@ async function moveTaskToResolved(env, taskId) {
       "Content-Type": "application/json",
       Authorization: "Basic " + btoa("jsonrpc:" + env.KANBOARD_TOKEN)
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(movePayload)
   });
-}
 
-// ========================
-// KV LOOKUP
-// ========================
-async function findTaskByIncident(env, incidentId) {
-  const list = await env.ALERT_KV.list();
-
-  for (const key of list.keys) {
-    const val = await env.ALERT_KV.get(key.name);
-    if (!val) continue;
-
-    const data = JSON.parse(val);
-
-    if (data.incident_id === incidentId) {
-      return data.task_id;
+  // 2️⃣ CLOSE task
+  const closePayload = {
+    jsonrpc: "2.0",
+    method: "closeTask",
+    id: 2,
+    params: {
+      task_id: Number(taskId)
     }
-  }
+  };
 
-  return null;
+  const res = await fetch(env.KANBOARD_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Basic " + btoa("jsonrpc:" + env.KANBOARD_TOKEN)
+    },
+    body: JSON.stringify(closePayload)
+  });
+
+  const text = await res.text();
+  console.log("KANBOARD FINAL CLOSE:", text);
 }
 
 // ========================
@@ -311,7 +310,8 @@ async function generateHash(event) {
   const input = JSON.stringify({
     source: event.source,
     type: event.type,
-    severity: event.severity
+    severity: event.severity,
+    unique: event.raw?.ray_id || event.timestamp
   });
 
   const data = new TextEncoder().encode(input);
